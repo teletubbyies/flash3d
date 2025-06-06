@@ -29,6 +29,11 @@ from datasets.bad_sequences import (
     LOW_QUALITY_SEQUENCE
     )
 
+try:
+    from depth_anything.dpt import DepthAnything
+except Exception:
+    DepthAnything = None
+
 
 CO3D_RAW_ROOT = os.path.normpath("E:\data\splatter-image-main\co3d")  # change to where your CO3D data resides
 CO3D_OUT_ROOT = os.path.normpath("E:\data\splatter-image-main\co3d_ansV1_1024")  # change to your folder here
@@ -36,6 +41,30 @@ N_DESIRED = 1024
 
 assert CO3D_RAW_ROOT is not None, "Change CO3D_RAW_ROOT to where your raw CO3D data resides"
 assert CO3D_OUT_ROOT is not None, "Change CO3D_OUT_ROOT to where you want to save the processed CO3D data"
+
+depth_model = None
+
+def estimate_depth(image: torch.Tensor) -> torch.Tensor:
+    """Estimate depth using DepthAnythingV2 if available."""
+    global depth_model
+    if DepthAnything is None:
+        return torch.zeros(1, image.shape[1], image.shape[2])
+    if depth_model is None:
+        depth_model = DepthAnything.from_pretrained("depth_anything_v2_base")
+        depth_model = depth_model.eval()
+    with torch.no_grad():
+        if image.dim() == 3:
+            inp = image.unsqueeze(0)
+        else:
+            inp = image
+        depth = depth_model(inp)[0]
+    return depth
+
+def unify_orientation(img: torch.Tensor) -> torch.Tensor:
+    """Rotate image to landscape orientation."""
+    if img.shape[1] > img.shape[2]:
+        img = torch.rot90(img, k=1, dims=[1, 2])
+    return img
 
 
 def exact_num_superpixels(image, n_desired, compactness=10, sigma=0):
@@ -329,10 +358,7 @@ def main(dataset_name, category):
             frame = created_dataset[frame_idx]
             rgb_image = torchvision.transforms.functional.pil_to_tensor(
                 Image.open(frame.image_path)).float() / 255.0
-            # [3, 1251, 703]
-            ## new
-            depth_fg = torch.zeros_like(rgb_image)[:1, ...]  # [1, 1251(H), 703(W)]
-            ##
+            depth_fg = estimate_depth(rgb_image)
             # [1, 1251, 703]
             # ============= Foreground mask =================
             # Initialise the foreground mask at the original resolution
@@ -345,30 +371,12 @@ def main(dataset_name, category):
             # Resize the foreground mask to the original scale
             # 自带crop在原图中的标定框
             x0, y0, box_w, box_h = frame.crop_bbox_xywh
-            resized_mask = torchvision.transforms.functional.resize(  # resize后的mask->raw_data的mask
+            resized_mask = torchvision.transforms.functional.resize(
                 frame.fg_probability[:, :resized_image_mask_boundary_y, :resized_image_mask_boundary_x],
-                # 800x800中的mask
-                (box_h, box_w),
-                interpolation=torchvision.transforms.InterpolationMode.BILINEAR
-            )  # 原图中 自带crop部分的mask(fg_probability)
-
-            # new
-            resized_depth = torchvision.transforms.functional.resize(
-                frame.depth_map[:, :resized_image_mask_boundary_y, :resized_image_mask_boundary_x],
                 (box_h, box_w),
                 interpolation=torchvision.transforms.InterpolationMode.BILINEAR
             )
 
-            # Use rgb mask as depth mask due to many frame.depth_mask is all zeros!
-            resized_depth_mask = torch.where(resized_mask > 0.4, torch.tensor(1.0), torch.tensor(0.0))
-            resized_depth *= resized_depth_mask
-
-            # Fill in the depth at the original scale in the correct location based
-            # on where it was cropped.
-            depth_fg[:, y0:y0 + box_h, x0:x0 + box_w] = resized_depth
-
-            # Fill in the foreground mask at the original scale in the correct location based
-            # on where it was cropped.
             fg_probability[:, y0:y0 + box_h, x0:x0 + box_w] = resized_mask
 
             # ============== Crop around principal point ================
