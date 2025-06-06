@@ -40,6 +40,18 @@ class CO3DDataset(SharedDataset):
             glob.glob(os.path.join(self.base_path, "*", "frame_order.txt"))
         )
         self.frame_order_files = []
+        split_dir = os.path.join(os.path.dirname(__file__), "splits", "co3d")
+        split_file = None
+        if self.dataset_name == "val":
+            split_file = os.path.join(split_dir, "val_files.txt")
+        elif self.dataset_name == "test":
+            split_file = os.path.join(split_dir, "test_files.txt")
+        elif self.dataset_name == "train":
+            split_file = os.path.join(split_dir, "train_files.txt")
+        seq_filter = None
+        if split_file is not None and os.path.exists(split_file):
+            with open(split_file, "r") as f:
+                seq_filter = set([line.strip().split()[0] for line in f.readlines()])
         exclude_sequences = NO_FG_COND_FRAME_SEQ[cfg.data.category[:-1]] + \
             LARGE_FOCAL_FRAME_SEQ[cfg.data.category[:-1]] + \
             NAN_SEQUENCES[cfg.data.category[:-1]] + \
@@ -54,8 +66,11 @@ class CO3DDataset(SharedDataset):
 
         # Check that the sequence was included in the preprocessed sequences
         for frame_order_file in frame_order_files:
-            if os.path.basename(os.path.dirname(frame_order_file)) not in exclude_sequences:
-                if os.path.basename(os.path.dirname(frame_order_file)) not in self.Ts.keys():
+            seq_name = os.path.basename(os.path.dirname(frame_order_file))
+            if seq_name not in exclude_sequences:
+                if seq_filter is not None and seq_name not in seq_filter:
+                    continue
+                if seq_name not in self.Ts.keys():
                     print(frame_order_file)
                 else:
                     self.frame_order_files.append(frame_order_file)
