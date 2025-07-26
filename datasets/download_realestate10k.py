@@ -7,12 +7,12 @@ import os
 import subprocess
 from multiprocessing import Pool
 from pathlib import Path
-from time import sleep
+from time import sleep, time
 
 from pytubefix import YouTube
 import tqdm
 from subprocess import call
-
+import shutil
 
 class Data:
     def __init__(self, url, seqname, list_timestamps):
@@ -92,7 +92,8 @@ class DataDownloader:
                         list_timestamps.append(timestamp)
 
             if youtube_url in self.list_data:
-                self.list_data[youtube_url].add(seq_name, list_timestamps)
+                # One url may correspond to many sequences and timestamps of this sequence
+                self.list_data[youtube_url].add(seq_name, list_timestamps) # Use the method 'add' of the Data instance.
             else:
                 self.list_data[youtube_url] = Data(youtube_url, seq_name, list_timestamps)
 
@@ -103,10 +104,19 @@ class DataDownloader:
         print("[INFO] Start downloading {} movies".format(len(self.list_data)))
 
         for global_count, data in enumerate(self.list_data.values()):
+            """
+                For train set, 6559 urls, one url may correspond to many sequences.
+                Iterate each url downloading correspondent video.
+            """
+            stime = time()
             print("[INFO] Downloading {} ".format(data.url))
+            print(f"{global_count + 1} / {len(self.list_data)}")
             current_file = self.tmp_path / f"current_{self.mode}"
 
-            call(("rm", "-r", str(current_file)))
+            if os.path.isfile(current_file):
+                os.remove(current_file)
+            elif os.path.isdir(current_file):
+                shutil.rmtree(current_file)
 
             try:
                 # sometimes this fails because of known issues of pytube and unknown factors
@@ -121,22 +131,21 @@ class DataDownloader:
 
             sleep(1)
 
+            # Detailed video file in the current_file directory(.../current_train(test)/)
             current_file = next(current_file.iterdir())
 
             if len(data) == 1:  # len(data) is len(data.list_seqnames)
                 process(data, 0, current_file, self.out_path)
             else:
-                with Pool(processes=4) as pool:
+                with Pool(processes=8) as pool:
+                    # process sequences of a video
                     pool.map(wrap_process, [(data, seq_id, current_file, self.out_path) for seq_id in range(len(data))])
 
-            print(f"[INFO] Extracted {sum(map(len, data.list_list_timestamps))}")
+            print(f"[INFO] Extracted {sum(map(len, data.list_list_timestamps))}, costs {time() - stime} seconds")
 
             # remove videos
-            call(("rm", str(current_file)))
+            os.remove(current_file)
             # os.system(command)
-
-            if self.is_done:
-                return False
 
         return True
 
@@ -166,7 +175,7 @@ def main():
     mode = args.mode
     data_path = Path(args.data_path)
     out_path = Path(args.out_path)
-    tmp_path = Path(args.tmp_path)
+    tmp_path = out_path
 
     if mode not in ["test", "train"]:
         raise ValueError(f"Invalid split mode: {mode}")
@@ -190,5 +199,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
